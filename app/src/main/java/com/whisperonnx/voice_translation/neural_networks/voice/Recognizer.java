@@ -48,6 +48,8 @@ public class Recognizer extends NeuralNetworkApi {
     private ArrayDeque<DataContainer> dataToRecognize = new ArrayDeque<>();
     private final Object lock = new Object();
 
+    private volatile boolean destroyed = false;
+
     public static final Action ACTION_TRANSCRIBE = Action.TRANSCRIBE;
     public static final Action ACTION_TRANSLATE = Action.TRANSLATE;
 
@@ -184,7 +186,7 @@ public class Recognizer extends NeuralNetworkApi {
         String cacheInitBatchPath = context.getExternalFilesDir(null).getPath() + "/Whisper_cache_initializer_batch.onnx";
         String detokenizerPath = context.getExternalFilesDir(null).getPath() + "/Whisper_detokenizer.onnx";
 
-        new Thread(new Runnable() {
+        modelLoadingThread = new Thread(new Runnable() {
             @Override
             public void run() {
                 try {
@@ -234,9 +236,17 @@ public class Recognizer extends NeuralNetworkApi {
                     detokenizerSessionOptions.setCPUArenaAllocator(false);
                     detokenizerSessionOptions.setMemoryPatternOptimization(false);
                     //detokenizerSessionOptions.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT);
+                    
                     detokenizerSession = onnxEnv.createSession(detokenizerPath, detokenizerSessionOptions);
 
-                    initListener.onInitializationFinished();
+                    synchronized (lock) {
+                        if (destroyed) {
+                            closeSessions();
+                            return;
+                        }
+
+                        initListener.onInitializationFinished();
+                    }
                 } catch (OrtException e) {
                     e.printStackTrace();
                     initListener.onError(new int[]{ErrorCodes.ERROR_LOADING_MODEL},0);
@@ -257,6 +267,10 @@ public class Recognizer extends NeuralNetworkApi {
             public void run() {
                 super.run();
                 synchronized (lock) {
+                    if (destroyed) {
+                        return;
+                    }
+
                     Log.e("recognizer","recognizingCalled");
                     if (data != null) {
                         dataToRecognize.addLast(new DataContainer(data, beamSize, languageCode, action));
@@ -275,6 +289,10 @@ public class Recognizer extends NeuralNetworkApi {
             public void run() {
                 super.run();
                 synchronized (lock) {
+                    if (destroyed) {
+                        return;
+                    }
+
                     Log.e("recognizer","recognizingCalled");
                     if (data != null) {
                         dataToRecognize.addLast(new DataContainer(data, beamSize, languageCode1, languageCode2));
@@ -602,14 +620,49 @@ public class Recognizer extends NeuralNetworkApi {
     }
 
     public void destroy() {
+        synchronized (lock) {
+            if (destroyed) {
+                return;
+            }
+
+            destroyed = true;
+            dataToRecognize.clear();
+
+            // recognize() performs ONNX inference while holding this lock.
+            // Therefore reaching this point means no recognition operation
+            // can currently be using the ONNX sessions.
+            closeSessions();
+        }
+    }
+
+    private void closeSessions() {
         try {
-            if (initSession != null) initSession.close();
-            if (encoderSession != null) encoderSession.close();
-            if (cacheInitSession != null) cacheInitSession.close();
-            if (cacheInitBatchSession != null) cacheInitBatchSession.close();
-            if (decoderSession != null) decoderSession.close();
-            if (detokenizerSession != null) detokenizerSession.close();
-        } catch (OrtException ignored) {}
+            if (initSession != null) {
+                initSession.close();
+                initSession = null;
+            }
+            if (encoderSession != null) {
+                encoderSession.close();
+                encoderSession = null;
+            }
+            if (cacheInitSession != null) {
+                cacheInitSession.close();
+                cacheInitSession = null;
+            }
+            if (cacheInitBatchSession != null) {
+                cacheInitBatchSession.close();
+                cacheInitBatchSession = null;
+            }
+            if (decoderSession != null) {
+                decoderSession.close();
+                decoderSession = null;
+            }
+            if (detokenizerSession != null) {
+                detokenizerSession.close();
+                detokenizerSession = null;
+            }
+        } catch (OrtException ignored) {
+        }
     }
 
     public int getLanguageID(String language){
