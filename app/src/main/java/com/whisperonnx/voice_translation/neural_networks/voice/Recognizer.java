@@ -186,7 +186,7 @@ public class Recognizer extends NeuralNetworkApi {
         String cacheInitBatchPath = context.getExternalFilesDir(null).getPath() + "/Whisper_cache_initializer_batch.onnx";
         String detokenizerPath = context.getExternalFilesDir(null).getPath() + "/Whisper_detokenizer.onnx";
 
-        modelLoadingThread = new Thread(new Runnable() {
+        new Thread(new Runnable() {
             @Override
             public void run() {
                 try {
